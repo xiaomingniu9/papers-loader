@@ -4,55 +4,46 @@
     {
       "name": "Nature Chemical Biology",
       "url": "https://www.nature.com/nchembio/research-articles",
-      "rss_url": "https://www.nature.com/nchembio.rss",
       "parser": "nature"
     },
     {
       "name": "Nature - Research Articles",
       "url": "https://www.nature.com/nature/research-articles",
-      "rss_url": "https://www.nature.com/nature.rss",
       "parser": "nature"
     },
     {
       "name": "Nature Chemistry",
       "url": "https://www.nature.com/nchem/research-articles",
-      "rss_url": "https://www.nature.com/nchem.rss",
       "parser": "nature"
     },
     {
       "name": "Nature Reviews Chemistry",
       "url": "https://www.nature.com/natrevchem/reviews-and-analysis",
-      "rss_url": "https://www.nature.com/natrevchem.rss",
       "parser": "nature"
     },
     {
       "name": "Nature Reviews Drug Discovery",
       "url": "https://www.nature.com/nrd/reviews-and-analysis",
-      "rss_url": "https://www.nature.com/nrd.rss",
       "parser": "nature"
     },
     {
       "name": "Nature Reviews Molecular Cell Biology",
       "url": "https://www.nature.com/nrm/reviews-and-analysis",
-      "rss_url": "https://www.nature.com/nrm.rss",
       "parser": "nature"
     },
     {
       "name": "Cell Chemical Biology",
       "url": "https://www.cell.com/cell-chemical-biology/newarticles",
-      "rss_url": "https://www.cell.com/cell-chemical-biology/current.rss",
       "parser": "cell"
     },
     {
       "name": "Science",
       "url": "https://www.science.org/toc/science/0/0",
-      "rss_url": "https://www.science.org/action/showFeed?type=etoc&feed=rss&jc=science",
       "parser": "science"
     },
     {
       "name": "JACS (Journal of the American Chemical Society)",
       "url": "https://pubs.acs.org/toc/jacsat/0/0",
-      "rss_url": "https://pubs.acs.org/action/showFeed?type=etoc&feed=rss&jc=jacsat",
       "parser": "acs"
     }
   ]

@@ -421,119 +421,6 @@ class ACSParser(BaseParser):
             return article_url.replace("/doi/", "/doi/pdf/", 1)
         return article_url + "/pdf"
 
-
-# ---------------------------------------------------------------------------
-# RSS parser (no Selenium needed)
-# ---------------------------------------------------------------------------
-class RSSParser:
-    """Fetches article listings from RSS feeds using plain HTTP requests."""
-
-    # PDF URL construction rules per parser type
-    PDF_RULES = {
-        "nature": lambda url: url + ".pdf",
-        "cell": lambda url: (url.replace("/fulltext/", "/pdfExtended/")
-                             if "/fulltext/" in url else url.rstrip("/") + "/pdf"),
-        "science": lambda url: (url.replace("/doi/abs/", "/doi/pdf/", 1)
-                                if "/doi/abs/" in url
-                                else url.replace("/doi/full/", "/doi/pdf/", 1)
-                                if "/doi/full/" in url
-                                else url.replace("/doi/", "/doi/pdf/", 1)
-                                if "/doi/" in url and "/doi/pdf/" not in url
-                                else url + "/pdf"),
-        "acs": lambda url: (url.replace("/doi/abs/", "/doi/pdf/")
-                            if "/doi/abs/" in url
-                            else url.replace("/doi/", "/doi/pdf/", 1)
-                            if "/doi/" in url and "/doi/pdf/" not in url
-                            else url + "/pdf"),
-    }
-
-    def __init__(self):
-        self.session = requests.Session()
-        self.session.headers.update({
-            "User-Agent": (
-                "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-                "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-            )
-        })
-
-    def fetch_articles(self, rss_url: str, parser_type: str) -> list[dict]:
-        """Fetch and parse an RSS feed, returning article dicts."""
-        try:
-            resp = self.session.get(rss_url, timeout=30)
-            resp.raise_for_status()
-        except Exception as e:
-            logging.warning(f"RSS fetch failed for {rss_url}: {e}")
-            return []
-
-        soup = BeautifulSoup(resp.content, "lxml-xml")
-        articles = []
-
-        # Non-article titles to skip (journal metadata, not real papers)
-        skip_titles = {
-            "issue editorial masthead", "issue publication information",
-            "editorial masthead", "publication information",
-            "table of contents", "front cover", "back cover",
-            "masthead", "corrections and additions",
-        }
-
-        for item in soup.find_all("item"):
-            title_el = item.find("title")
-            link_el = item.find("link")
-            date_el = item.find("dc:date") or item.find("pubDate") or item.find("prism:coverDate")
-
-            if not title_el or not link_el:
-                continue
-
-            title = title_el.get_text(strip=True)
-            if title.lower() in skip_titles:
-                continue
-
-            url = link_el.get_text(strip=True)
-            article_date = date_el.get_text(strip=True) if date_el else ""
-
-            articles.append(make_article(title, url, article_date))
-
-        logging.info(f"RSS found {len(articles)} articles from {rss_url}")
-        return articles
-
-    def filter_by_date(self, articles: list[dict], target_date: date) -> list[dict]:
-        """Keep only articles matching the target date."""
-        result = []
-        for a in articles:
-            parsed = self._parse_date(a["date"])
-            if parsed is None or parsed == target_date:
-                result.append(a)
-        return result
-
-    def _parse_date(self, date_str: str) -> date | None:
-        """Parse RSS date formats."""
-        if not date_str:
-            return None
-        date_str = date_str.strip()
-        # ISO format: 2026-03-13T00:00:00Z or 2026-03-13
-        if date_str[:10].count("-") == 2:
-            try:
-                return date.fromisoformat(date_str[:10])
-            except ValueError:
-                pass
-        # RFC 2822: Thu, 13 Mar 2026 00:00:00 GMT
-        for fmt in ("%a, %d %b %Y %H:%M:%S %Z", "%a, %d %b %Y %H:%M:%S %z",
-                    "%d %b %Y", "%d %B %Y", "%B %d, %Y"):
-            try:
-                return datetime.strptime(date_str, fmt).date()
-            except ValueError:
-                continue
-        logging.debug(f"Could not parse RSS date: {date_str}")
-        return None
-
-    def get_pdf_url(self, article_url: str, parser_type: str) -> str | None:
-        """Construct PDF URL based on publisher rules."""
-        # Strip query parameters before constructing PDF URL
-        clean_url = article_url.split("?")[0]
-        rule = self.PDF_RULES.get(parser_type)
-        return rule(clean_url) if rule else None
-
-
 # ---------------------------------------------------------------------------
 # Parser registry
 # ---------------------------------------------------------------------------
@@ -558,8 +445,7 @@ class PaperDownloader:
         self.dry_run = dry_run
         self.headless = headless
         self.output_dir = Path(config["output_base_dir"]).expanduser() / target_date.isoformat()
-        self.browser = None  # Lazy init — only started if RSS fails
-        self.rss_parser = RSSParser()
+        self.browser = None  # Lazy init
         self.session = requests.Session()
         self.session.headers.update({
             "User-Agent": (
@@ -608,23 +494,20 @@ class PaperDownloader:
     def _process_journal(self, journal: dict):
         name = journal["name"]
         url = journal["url"]
-        rss_url = journal.get("rss_url")
         parser_name = journal["parser"]
 
         logging.info(f"\n{'='*60}")
         logging.info(f"Processing: {name}")
 
         articles = []
-        use_rss = False
         selenium_failed = False
 
-        # Try Selenium first (more reliable — sees exactly what's on the website)
         parser = PARSERS.get(parser_name)
         if not parser:
             logging.error(f"Unknown parser '{parser_name}' for {name}")
             return
 
-        logging.info(f"Fetching via Selenium: {url}")
+        logging.info(f"Fetching: {url}")
         try:
             self._ensure_browser()
             current_url = url
@@ -640,11 +523,12 @@ class PaperDownloader:
                     if current_page == 1:
                         # No articles on first page — likely Cloudflare block
                         selenium_failed = True
+                        logging.warning(f"Blocked or no content on {current_url}")
                     break
 
                 matched = parser.filter_by_date(page_articles, self.target_date)
                 articles.extend(matched)
-                logging.info(f"Selenium page {current_page}: {len(page_articles)} articles, {len(matched)} from {self.target_date}")
+                logging.info(f"Page {current_page}: {len(page_articles)} articles, {len(matched)} from {self.target_date}")
 
                 # Stop if we've found articles older than target date
                 if parser.has_older_articles(page_articles, self.target_date):
@@ -655,22 +539,17 @@ class PaperDownloader:
                 current_url = parser.get_next_page_url(url, current_page)
                 time.sleep(random.uniform(1, 3))
 
-            logging.info(f"Selenium total: {len(articles)} articles from {self.target_date} (scanned {current_page} page(s))")
+            if not selenium_failed:
+                logging.info(f"Found {len(articles)} articles from {self.target_date} (scanned {current_page} page(s))")
         except Exception as e:
-            logging.warning(f"Selenium failed for {name}: {e}")
+            logging.warning(f"Failed for {name}: {e}")
             selenium_failed = True
 
-        # Fall back to RSS if Selenium failed (e.g., Cloudflare blocked, 0 articles)
-        if selenium_failed and rss_url:
-            logging.info(f"Falling back to RSS: {rss_url}")
-            all_articles = self.rss_parser.fetch_articles(rss_url, parser_name)
-            if all_articles:
-                articles = self.rss_parser.filter_by_date(all_articles, self.target_date)
-                logging.info(f"RSS: {len(all_articles)} total, {len(articles)} from {self.target_date}")
-                use_rss = True
-
         if not articles:
-            logging.info(f"No articles for {self.target_date} from {name}")
+            if selenium_failed:
+                logging.warning(f"Unable to check {name} — website blocked (Cloudflare). There may be papers on {self.target_date}.")
+            else:
+                logging.info(f"No articles for {self.target_date} from {name}")
             if not self.dry_run:
                 if selenium_failed:
                     suffix = "_unable_to_check"
@@ -705,11 +584,9 @@ class PaperDownloader:
                 logging.info(f"            Date: {article['date']}")
                 self.stats["skipped"] += 1
             else:
-                pdf_url = (self.rss_parser.get_pdf_url(article["url"], parser_name)
-                           if use_rss
-                           else PARSERS[parser_name].get_pdf_url(
-                               self.browser.driver if self.browser else None,
-                               article["url"]))
+                pdf_url = PARSERS[parser_name].get_pdf_url(
+                    self.browser.driver if self.browser else None,
+                    article["url"])
                 failure_reason = self._download_article_with_url(article, pdf_url, journal_dir)
                 if failure_reason:
                     failed_articles.append((article, pdf_url, failure_reason))
