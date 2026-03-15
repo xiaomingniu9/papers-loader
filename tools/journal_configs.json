@@ -9,7 +9,7 @@
     },
     {
       "name": "Nature - Research Articles",
-      "url": "https://www.nature.com/nature/research-articles?searchType=journalSearch&sort=PubDate&type=article&page=2",
+      "url": "https://www.nature.com/nature/research-articles",
       "rss_url": "https://www.nature.com/nature.rss",
       "parser": "nature"
     },

@@ -139,6 +139,9 @@ class BrowserManager:
     def get_page(self, url: str, wait_seconds: int = 15) -> BeautifulSoup:
         """Navigate to URL, wait for content, and return parsed HTML."""
         domain = urlparse(url).netloc
+        # Open a new tab so previous pages stay open (useful in --visible mode)
+        if not self.headless and len(self.driver.window_handles) > 0:
+            self.driver.switch_to.new_window("tab")
         # Load cookies first by visiting the domain root, then navigate
         cookie_file = COOKIE_DIR / f"{domain}.pkl"
         if cookie_file.exists():
