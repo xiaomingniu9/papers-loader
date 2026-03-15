@@ -398,6 +398,107 @@ class ACSParser(BaseParser):
 
 
 # ---------------------------------------------------------------------------
+# RSS parser (no Selenium needed)
+# ---------------------------------------------------------------------------
+class RSSParser:
+    """Fetches article listings from RSS feeds using plain HTTP requests."""
+
+    # PDF URL construction rules per parser type
+    PDF_RULES = {
+        "nature": lambda url: url + ".pdf",
+        "cell": lambda url: (url.replace("/fulltext/", "/pdfExtended/")
+                             if "/fulltext/" in url else url.rstrip("/") + "/pdf"),
+        "science": lambda url: (url.replace("/doi/abs/", "/doi/pdf/", 1)
+                                if "/doi/abs/" in url
+                                else url.replace("/doi/full/", "/doi/pdf/", 1)
+                                if "/doi/full/" in url
+                                else url.replace("/doi/", "/doi/pdf/", 1)
+                                if "/doi/" in url and "/doi/pdf/" not in url
+                                else url + "/pdf"),
+        "acs": lambda url: (url.replace("/doi/abs/", "/doi/pdf/")
+                            if "/doi/abs/" in url
+                            else url.replace("/doi/", "/doi/pdf/", 1)
+                            if "/doi/" in url and "/doi/pdf/" not in url
+                            else url + "/pdf"),
+    }
+
+    def __init__(self):
+        self.session = requests.Session()
+        self.session.headers.update({
+            "User-Agent": (
+                "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+            )
+        })
+
+    def fetch_articles(self, rss_url: str, parser_type: str) -> list[dict]:
+        """Fetch and parse an RSS feed, returning article dicts."""
+        try:
+            resp = self.session.get(rss_url, timeout=30)
+            resp.raise_for_status()
+        except Exception as e:
+            logging.warning(f"RSS fetch failed for {rss_url}: {e}")
+            return []
+
+        soup = BeautifulSoup(resp.content, "lxml-xml")
+        articles = []
+
+        for item in soup.find_all("item"):
+            title_el = item.find("title")
+            link_el = item.find("link")
+            date_el = item.find("dc:date") or item.find("pubDate") or item.find("prism:coverDate")
+
+            if not title_el or not link_el:
+                continue
+
+            title = title_el.get_text(strip=True)
+            url = link_el.get_text(strip=True)
+            article_date = date_el.get_text(strip=True) if date_el else ""
+
+            articles.append(make_article(title, url, article_date))
+
+        logging.info(f"RSS found {len(articles)} articles from {rss_url}")
+        return articles
+
+    def filter_by_date(self, articles: list[dict], target_date: date) -> list[dict]:
+        """Keep only articles matching the target date."""
+        result = []
+        for a in articles:
+            parsed = self._parse_date(a["date"])
+            if parsed is None or parsed == target_date:
+                result.append(a)
+        return result
+
+    def _parse_date(self, date_str: str) -> date | None:
+        """Parse RSS date formats."""
+        if not date_str:
+            return None
+        date_str = date_str.strip()
+        # ISO format: 2026-03-13T00:00:00Z or 2026-03-13
+        if date_str[:10].count("-") == 2:
+            try:
+                return date.fromisoformat(date_str[:10])
+            except ValueError:
+                pass
+        # RFC 2822: Thu, 13 Mar 2026 00:00:00 GMT
+        for fmt in ("%a, %d %b %Y %H:%M:%S %Z", "%a, %d %b %Y %H:%M:%S %z",
+                    "%d %b %Y", "%d %B %Y", "%B %d, %Y"):
+            try:
+                return datetime.strptime(date_str, fmt).date()
+            except ValueError:
+                continue
+        logging.debug(f"Could not parse RSS date: {date_str}")
+        return None
+
+    def get_pdf_url(self, article_url: str, parser_type: str) -> str | None:
+        """Construct PDF URL based on publisher rules."""
+        # Strip query parameters before constructing PDF URL
+        clean_url = article_url.split("?")[0]
+        rule = self.PDF_RULES.get(parser_type)
+        return rule(clean_url) if rule else None
+
+
+# ---------------------------------------------------------------------------
 # Parser registry
 # ---------------------------------------------------------------------------
 PARSERS: dict[str, BaseParser] = {
@@ -419,10 +520,25 @@ class PaperDownloader:
         self.config = config
         self.target_date = target_date
         self.dry_run = dry_run
+        self.headless = headless
         self.output_dir = Path(config["output_base_dir"]).expanduser() / target_date.isoformat()
-        self.browser = BrowserManager(headless=headless)
-        self.session = None
+        self.browser = None  # Lazy init — only started if RSS fails
+        self.rss_parser = RSSParser()
+        self.session = requests.Session()
+        self.session.headers.update({
+            "User-Agent": (
+                "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+            )
+        })
         self.stats = {"downloaded": 0, "failed": 0, "skipped": 0}
+
+    def _ensure_browser(self):
+        """Start browser only when needed (Selenium fallback)."""
+        if self.browser is None:
+            self.browser = BrowserManager(headless=self.headless)
+            self.browser.start()
+            self.session = self.browser.transfer_cookies_to_session()
 
     def run(self, filter_url: str | None = None):
         """Main entry point: scrape listings and download PDFs."""
@@ -438,16 +554,12 @@ class PaperDownloader:
             logging.info(f"Output directory: {self.output_dir}")
 
         try:
-            self.browser.start()
-            self.session = self.browser.transfer_cookies_to_session()
-
             for journal in journals:
                 self._process_journal(journal)
-                # Polite delay between journals
-                time.sleep(random.uniform(2, 4))
-
+                time.sleep(random.uniform(1, 3))
         finally:
-            self.browser.stop()
+            if self.browser:
+                self.browser.stop()
 
         # Summary
         logging.info(
@@ -458,89 +570,174 @@ class PaperDownloader:
     def _process_journal(self, journal: dict):
         name = journal["name"]
         url = journal["url"]
+        rss_url = journal.get("rss_url")
         parser_name = journal["parser"]
-        parser = PARSERS.get(parser_name)
 
+        logging.info(f"\n{'='*60}")
+        logging.info(f"Processing: {name}")
+
+        articles = []
+        use_rss = False
+        selenium_failed = False
+
+        # Try Selenium first (more reliable — sees exactly what's on the website)
+        parser = PARSERS.get(parser_name)
         if not parser:
             logging.error(f"Unknown parser '{parser_name}' for {name}")
             return
 
-        logging.info(f"\n{'='*60}")
-        logging.info(f"Processing: {name}")
-        logging.info(f"URL: {url}")
-
+        logging.info(f"Fetching via Selenium: {url}")
         try:
+            self._ensure_browser()
             soup = self.browser.get_page(url)
-            # Update session cookies after page load
             self.session = self.browser.transfer_cookies_to_session()
-
             all_articles = parser.get_articles(soup, url)
             articles = parser.filter_by_date(all_articles, self.target_date)
-            logging.info(f"Found {len(all_articles)} total articles, {len(articles)} from {self.target_date}")
-
-            if not articles:
-                logging.info(f"No articles for {self.target_date} from {name}")
-                return
-
-            for article in articles:
-                if self.dry_run:
-                    logging.info(f"  [DRY RUN] {article['title']}")
-                    logging.info(f"            {article['url']}")
-                    logging.info(f"            Date: {article['date']}")
-                    self.stats["skipped"] += 1
-                else:
-                    self._download_article(article, parser, name)
-                    time.sleep(random.uniform(2, 5))
-
+            logging.info(f"Selenium: {len(all_articles)} total, {len(articles)} from {self.target_date}")
+            # Treat 0 articles found as a likely Cloudflare block
+            if not all_articles:
+                selenium_failed = True
         except Exception as e:
-            logging.error(f"Error processing {name}: {e}")
-            self.stats["failed"] += 1
+            logging.warning(f"Selenium failed for {name}: {e}")
+            selenium_failed = True
 
-    def _download_article(self, article: dict, parser: BaseParser, journal_name: str):
+        # Fall back to RSS if Selenium failed (e.g., Cloudflare blocked, 0 articles)
+        if selenium_failed and rss_url:
+            logging.info(f"Falling back to RSS: {rss_url}")
+            all_articles = self.rss_parser.fetch_articles(rss_url, parser_name)
+            if all_articles:
+                articles = self.rss_parser.filter_by_date(all_articles, self.target_date)
+                logging.info(f"RSS: {len(all_articles)} total, {len(articles)} from {self.target_date}")
+                use_rss = True
+
+        if not articles:
+            logging.info(f"No articles for {self.target_date} from {name}")
+            if not self.dry_run:
+                if selenium_failed:
+                    suffix = "_unable_to_check"
+                else:
+                    suffix = "_no_paper_published"
+                empty_dir = self.output_dir / f"{name}{suffix}"
+                empty_dir.mkdir(parents=True, exist_ok=True)
+            return
+
+        # Create journal subfolder within the date directory
+        journal_dir = self.output_dir / name
+        if not self.dry_run:
+            journal_dir.mkdir(parents=True, exist_ok=True)
+
+        failed_articles = []  # Track failures for this journal
+
+        for article in articles:
+            if self.dry_run:
+                logging.info(f"  [DRY RUN] {article['title']}")
+                logging.info(f"            {article['url']}")
+                logging.info(f"            Date: {article['date']}")
+                self.stats["skipped"] += 1
+            else:
+                pdf_url = (self.rss_parser.get_pdf_url(article["url"], parser_name)
+                           if use_rss
+                           else PARSERS[parser_name].get_pdf_url(
+                               self.browser.driver if self.browser else None,
+                               article["url"]))
+                failure_reason = self._download_article_with_url(article, pdf_url, journal_dir)
+                if failure_reason:
+                    failed_articles.append((article, pdf_url, failure_reason))
+                time.sleep(random.uniform(2, 5))
+
+        # Write a report for any failed downloads
+        if failed_articles and not self.dry_run:
+            self._write_failure_report(journal_dir, name, failed_articles)
+
+    def _download_article_with_url(self, article: dict, pdf_url: str | None,
+                                    dest_dir: Path | None = None) -> str | None:
+        """Download a single article PDF. Returns failure reason string, or None on success."""
         title = article["title"]
-        pdf_url = parser.get_pdf_url(self.browser.driver, article["url"])
 
         if not pdf_url:
             logging.warning(f"Could not determine PDF URL for: {title}")
             self.stats["failed"] += 1
-            return
+            return "Could not determine PDF URL"
 
         filename = self._sanitize_filename(title) + ".pdf"
-        filepath = self.output_dir / filename
+        filepath = (dest_dir or self.output_dir) / filename
 
         if filepath.exists():
             logging.info(f"  Already downloaded: {filename}")
             self.stats["skipped"] += 1
-            return
+            return None
 
         logging.info(f"  Downloading: {title}")
         logging.debug(f"  PDF URL: {pdf_url}")
 
-        try:
-            resp = self.session.get(pdf_url, timeout=60, stream=True,
-                                     allow_redirects=True)
-            resp.raise_for_status()
+        # Try plain HTTP first
+        content = self._try_download_pdf(pdf_url)
 
-            content = resp.content
-
-            # Validate it's actually a PDF
-            if not content[:5] == b"%PDF-":
-                logging.warning(f"  Response is not a PDF for: {title} (got {content[:20]})")
+        # If blocked (403/non-PDF), fall back to Selenium
+        if content is None:
+            logging.info(f"  Plain download blocked, trying via browser...")
+            try:
+                self._ensure_browser()
+                self.browser.driver.get(pdf_url)
+                time.sleep(10)
+                self.session = self.browser.transfer_cookies_to_session()
+                content = self._try_download_pdf(pdf_url)
+            except Exception as e:
+                logging.error(f"  Browser fallback failed for '{title}': {e}")
                 self.stats["failed"] += 1
-                return
+                return f"Browser fallback error: {e}"
 
-            if len(content) < 10_000:
-                logging.warning(f"  PDF too small ({len(content)} bytes), might be an error page: {title}")
-                self.stats["failed"] += 1
-                return
-
-            filepath.write_bytes(content)
-            logging.info(f"  Saved: {filepath.name} ({len(content) // 1024} KB)")
-            self.stats["downloaded"] += 1
-
-        except Exception as e:
-            logging.error(f"  Failed to download '{title}': {e}")
+        if content is None:
             self.stats["failed"] += 1
+            return "PDF download blocked (403/Cloudflare or invalid PDF response)"
+
+        filepath.write_bytes(content)
+        logging.info(f"  Saved: {filepath.name} ({len(content) // 1024} KB)")
+        self.stats["downloaded"] += 1
+        return None
+
+    def _write_failure_report(self, journal_dir: Path, journal_name: str,
+                                failed_articles: list[tuple[dict, str | None, str]]):
+        """Write a txt file documenting papers that could not be downloaded."""
+        report_path = journal_dir / "failed_downloads.txt"
+        lines = [
+            f"Failed Downloads — {journal_name}",
+            f"Date: {self.target_date.isoformat()}",
+            f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
+            f"Total failed: {len(failed_articles)}",
+            "",
+        ]
+
+        for i, (article, pdf_url, reason) in enumerate(failed_articles, 1):
+            lines.append(f"{'—' * 40}")
+            lines.append(f"{i}. {article['title']}")
+            lines.append(f"   Article URL: {article['url']}")
+            if pdf_url:
+                lines.append(f"   PDF URL:     {pdf_url}")
+            lines.append(f"   Reason:      {reason}")
+            lines.append("")
+
+        report_path.write_text("\n".join(lines), encoding="utf-8")
+        logging.info(f"  Wrote failure report: {report_path.name} ({len(failed_articles)} papers)")
+
+    def _try_download_pdf(self, pdf_url: str) -> bytes | None:
+        """Attempt to download a PDF. Returns content bytes or None if failed."""
+        try:
+            resp = self.session.get(pdf_url, timeout=60, allow_redirects=True)
+            if resp.status_code == 403:
+                return None
+            resp.raise_for_status()
+            content = resp.content
+            if content[:5] != b"%PDF-":
+                logging.debug(f"  Response is not a PDF (got {content[:20]})")
+                return None
+            if len(content) < 10_000:
+                logging.debug(f"  PDF too small ({len(content)} bytes)")
+                return None
+            return content
+        except Exception as e:
+            logging.debug(f"  Download attempt failed: {e}")
+            return None
 
     @staticmethod
     def _sanitize_filename(title: str) -> str:
