@@ -37,8 +37,14 @@ python3 tools/download_papers.py --date 2026-03-13
 # Preview without downloading
 python3 tools/download_papers.py --dry-run
 
+# Preview papers from a specific date
+python3 tools/download_papers.py --date 2026-03-10 --dry-run
+
 # Show browser window (needed for Cloudflare-protected sites like Science/ACS)
 python3 tools/download_papers.py --visible
+
+# Combine flags (e.g., specific journal + specific date)
+python3 tools/download_papers.py --url "https://www.nature.com/nchem/research-articles" --date 2026-03-10
 ```
 
 Papers are saved to `~/Downloads/research-papers/YYYY-MM-DD/`.
