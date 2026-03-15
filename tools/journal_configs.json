@@ -1,0 +1,50 @@
+{
+  "output_base_dir": "~/Downloads/research-papers",
+  "journals": [
+    {
+      "name": "Nature Chemical Biology",
+      "url": "https://www.nature.com/nchembio/research-articles",
+      "parser": "nature"
+    },
+    {
+      "name": "Nature - Research Articles",
+      "url": "https://www.nature.com/nature/research-articles?searchType=journalSearch&sort=PubDate&type=article&page=2",
+      "parser": "nature"
+    },
+    {
+      "name": "Nature Chemistry",
+      "url": "https://www.nature.com/nchem/research-articles",
+      "parser": "nature"
+    },
+    {
+      "name": "Nature Reviews Chemistry",
+      "url": "https://www.nature.com/natrevchem/reviews-and-analysis",
+      "parser": "nature"
+    },
+    {
+      "name": "Nature Reviews Drug Discovery",
+      "url": "https://www.nature.com/nrd/reviews-and-analysis",
+      "parser": "nature"
+    },
+    {
+      "name": "Nature Reviews Molecular Cell Biology",
+      "url": "https://www.nature.com/nrm/reviews-and-analysis",
+      "parser": "nature"
+    },
+    {
+      "name": "Cell Chemical Biology",
+      "url": "https://www.cell.com/cell-chemical-biology/newarticles",
+      "parser": "cell"
+    },
+    {
+      "name": "Science",
+      "url": "https://www.science.org/toc/science/0/0",
+      "parser": "science"
+    },
+    {
+      "name": "JACS (Journal of the American Chemical Society)",
+      "url": "https://pubs.acs.org/toc/jacsat/0/0",
+      "parser": "acs"
+    }
+  ]
+}
