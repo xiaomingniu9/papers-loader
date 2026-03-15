@@ -468,6 +468,14 @@ class RSSParser:
         soup = BeautifulSoup(resp.content, "lxml-xml")
         articles = []
 
+        # Non-article titles to skip (journal metadata, not real papers)
+        skip_titles = {
+            "issue editorial masthead", "issue publication information",
+            "editorial masthead", "publication information",
+            "table of contents", "front cover", "back cover",
+            "masthead", "corrections and additions",
+        }
+
         for item in soup.find_all("item"):
             title_el = item.find("title")
             link_el = item.find("link")
@@ -477,6 +485,9 @@ class RSSParser:
                 continue
 
             title = title_el.get_text(strip=True)
+            if title.lower() in skip_titles:
+                continue
+
             url = link_el.get_text(strip=True)
             article_date = date_el.get_text(strip=True) if date_el else ""
 
@@ -667,6 +678,17 @@ class PaperDownloader:
                     suffix = "_no_paper_published"
                 empty_dir = self.output_dir / f"{name}{suffix}"
                 empty_dir.mkdir(parents=True, exist_ok=True)
+                if selenium_failed:
+                    note_path = empty_dir / "note.txt"
+                    note_path.write_text(
+                        f"Unable to check — {name}\n"
+                        f"Date: {self.target_date.isoformat()}\n\n"
+                        f"The website was blocked (likely Cloudflare protection).\n"
+                        f"Could not retrieve the article list, so papers cannot be previewed.\n\n"
+                        f"To check manually, visit:\n  {url}\n\n"
+                        f"Or try running with --visible flag to solve the challenge in the browser.\n",
+                        encoding="utf-8",
+                    )
             return
 
         # Create journal subfolder within the date directory
@@ -692,6 +714,10 @@ class PaperDownloader:
                 if failure_reason:
                     failed_articles.append((article, pdf_url, failure_reason))
                 time.sleep(random.uniform(2, 5))
+
+        # Always write a preview listing all papers found for this date
+        if not self.dry_run:
+            self._write_preview(journal_dir, name, articles)
 
         # Write a report for any failed downloads
         if failed_articles and not self.dry_run:
@@ -743,6 +769,34 @@ class PaperDownloader:
         logging.info(f"  Saved: {filepath.name} ({len(content) // 1024} KB)")
         self.stats["downloaded"] += 1
         return None
+
+    def _write_preview(self, journal_dir: Path, journal_name: str,
+                        articles: list[dict]):
+        """Write a preview text file listing all papers found for this date."""
+        preview_path = journal_dir / "preview.txt"
+        lines = [
+            f"Papers Published — {journal_name}",
+            f"Date: {self.target_date.isoformat()}",
+            f"Total: {len(articles)}",
+            "",
+        ]
+
+        for i, article in enumerate(articles, 1):
+            lines.append(f"{i}. {article['title']}")
+            lines.append(f"   URL: {article['url']}")
+            if article.get("date"):
+                lines.append(f"   Published: {article['date']}")
+            # Check if PDF was actually downloaded
+            filename = self._sanitize_filename(article["title"]) + ".pdf"
+            filepath = journal_dir / filename
+            if filepath.exists():
+                lines.append(f"   Status: Downloaded")
+            else:
+                lines.append(f"   Status: Download failed — see failed_downloads.txt")
+            lines.append("")
+
+        preview_path.write_text("\n".join(lines), encoding="utf-8")
+        logging.info(f"  Wrote preview: {preview_path.name} ({len(articles)} papers)")
 
     def _write_failure_report(self, journal_dir: Path, journal_name: str,
                                 failed_articles: list[tuple[dict, str | None, str]]):

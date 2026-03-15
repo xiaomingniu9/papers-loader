@@ -63,11 +63,33 @@ python3 tools/download_papers.py --uninstall-schedule
 
 If your Mac is asleep at 12 PM, the job runs when it wakes up.
 
-## Adding Journals
+## Customizing Journals
 
-1. Add the journal URL and parser type to `tools/journal_configs.json`
-2. If the publisher is new (not Nature/Cell/Science/ACS), add a parser class in `tools/download_papers.py`
-3. Test with `--dry-run`
+All supported journals are configured in `tools/journal_configs.json`. You can add, remove, or edit journals freely.
+
+Each entry looks like this:
+
+```json
+{
+  "name": "Nature Chemistry",
+  "url": "https://www.nature.com/nchem/research-articles",
+  "rss_url": "https://www.nature.com/nchem.rss",
+  "parser": "nature"
+}
+```
+
+| Field | Description |
+|-------|-------------|
+| `name` | Display name (used as the folder name) |
+| `url` | The journal's article listing page |
+| `rss_url` | RSS feed URL (optional, used as fallback when the site is blocked) |
+| `parser` | Which parser to use: `nature`, `cell`, `science`, or `acs` |
+
+**To add a journal:** Copy an existing entry, update the fields, and pick the parser that matches the publisher. Test with `--dry-run` to verify.
+
+**To remove a journal:** Delete its entry from the JSON file.
+
+**To add a new publisher:** If the journal uses a publisher other than Nature/Cell/Science/ACS, you'll need to add a new parser class in `tools/download_papers.py`.
 
 ## Note on Cloudflare
 
