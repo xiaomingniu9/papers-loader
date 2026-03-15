@@ -263,6 +263,28 @@ class BaseParser(ABC):
                 pass
         raise ValueError(f"Cannot parse date: {date_str}")
 
+    def has_older_articles(self, articles: list[dict], target_date: date) -> bool:
+        """Check if any article on the page is older than the target date."""
+        for a in articles:
+            try:
+                d = self._parse_date(a["date"])
+                if d < target_date:
+                    return True
+            except (ValueError, TypeError):
+                continue
+        return False
+
+    def get_next_page_url(self, current_url: str, page_number: int) -> str:
+        """Construct the URL for the given page number."""
+        parsed = urlparse(current_url)
+        # Replace or add page parameter
+        if "page=" in current_url:
+            return re.sub(r'page=\d+', f'page={page_number}', current_url)
+        elif parsed.query:
+            return f"{current_url}&page={page_number}"
+        else:
+            return f"{current_url}?page={page_number}"
+
     def get_pdf_url(self, driver, article_url: str) -> str | None:
         """Navigate to article page and find PDF link. Override per publisher."""
         return None
@@ -537,7 +559,9 @@ class PaperDownloader:
         self.stats = {"downloaded": 0, "failed": 0, "skipped": 0}
 
     def _ensure_browser(self):
-        """Start browser only when needed (Selenium fallback)."""
+        """Start browser only when needed. Restart if previous session crashed."""
+        if self.browser is not None and self.browser.driver is None:
+            self.browser = None  # Previous session crashed, reset
         if self.browser is None:
             self.browser = BrowserManager(headless=self.headless)
             self.browser.start()
@@ -592,14 +616,35 @@ class PaperDownloader:
         logging.info(f"Fetching via Selenium: {url}")
         try:
             self._ensure_browser()
-            soup = self.browser.get_page(url)
-            self.session = self.browser.transfer_cookies_to_session()
-            all_articles = parser.get_articles(soup, url)
-            articles = parser.filter_by_date(all_articles, self.target_date)
-            logging.info(f"Selenium: {len(all_articles)} total, {len(articles)} from {self.target_date}")
-            # Treat 0 articles found as a likely Cloudflare block
-            if not all_articles:
-                selenium_failed = True
+            current_url = url
+            current_page = 1
+            max_pages = 10  # Safety limit
+
+            while current_page <= max_pages:
+                soup = self.browser.get_page(current_url)
+                self.session = self.browser.transfer_cookies_to_session()
+                page_articles = parser.get_articles(soup, current_url)
+
+                if not page_articles:
+                    if current_page == 1:
+                        # No articles on first page — likely Cloudflare block
+                        selenium_failed = True
+                    break
+
+                matched = parser.filter_by_date(page_articles, self.target_date)
+                articles.extend(matched)
+                logging.info(f"Selenium page {current_page}: {len(page_articles)} articles, {len(matched)} from {self.target_date}")
+
+                # Stop if we've found articles older than target date
+                if parser.has_older_articles(page_articles, self.target_date):
+                    break
+
+                # All articles on this page are newer — check next page
+                current_page += 1
+                current_url = parser.get_next_page_url(url, current_page)
+                time.sleep(random.uniform(1, 3))
+
+            logging.info(f"Selenium total: {len(articles)} articles from {self.target_date} (scanned {current_page} page(s))")
         except Exception as e:
             logging.warning(f"Selenium failed for {name}: {e}")
             selenium_failed = True
